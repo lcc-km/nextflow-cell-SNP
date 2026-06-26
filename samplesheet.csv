@@ -1,0 +1,4 @@
+patient,sample,lane,fastq_1,fastq_2
+lucc,lucc,LANE,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103986-SE_R1.fastq.gz,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103986-SE_R2.fastq.gz
+x,x,LANE,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103978-SE_R1.fastq.gz,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103978-SE_R2.fastq.gz
+y,y,LANE,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103979-SE_R1.fastq.gz,/mnt/vol1/lucc/work/SZ_data/1.WES/company/fa/D21R103979-SE_R2.fastq.gz

@@ -1,0 +1,116 @@
+include { GATK4_BASERECALIBRATOR  } from './modules/nf-core/gatk4/baserecalibrator/main_c_docker.nf'
+include { GATK4_APPLYBQSR } from './modules/nf-core/gatk4/applybqsr/main_c_docker.nf'
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_BQSR }    from './modules/nf-core/samtools/index/main_c_docker.nf'
+include { GATK4_HAPLOTYPECALLER } from './modules/nf-core/gatk4/haplotypecaller/main_c_docker.nf'
+include { GATK4_VARIANTRECALIBRATOR as VariantRecalibrator_SNP} from './modules/nf-core/gatk4/variantrecalibrator/main_c_docker.nf'
+include { GATK4_VARIANTRECALIBRATOR as VariantRecalibrator_INDEL} from './modules/nf-core/gatk4/variantrecalibrator/main_c_docker.nf'
+include { GATK4_APPLYVQSR as APPLYVQSR_SNP} from './modules/nf-core/gatk4/applyvqsr/main_c_docker.nf'
+include { GATK4_APPLYVQSR as APPLYVQSR_INDEL} from './modules/nf-core/gatk4/applyvqsr/main_c_docker.nf'
+include { GATK4_MERGEVCFS } from './modules/nf-core/gatk4/mergevcfs/main_c_docker.nf'
+
+
+workflow GATK_GERMLINE_VARIANT_CALLING {
+    take:
+        ch_input_bam_bai_bed      // 输入: [meta, bam, bai, bed] (经过去重的BAM + 索引 + Probe BED)
+        ch_fasta                   // 参考基因组 [meta, fasta]
+        ch_fai                     // [meta, fai]
+        ch_dict                    // [meta, dict]
+        ch_known_sites             // 已知变异位点 (用于BQSR)
+        ch_known_sites_tbi         // 已知变异位点索引
+        val_probe_bed              // Probe BED 文件 (Value)
+        val_dbsnp                  // dbsnp 文件路径 (用于HC)
+        val_dbsnp_tbi              // dbsnp 索引路径
+        val_hapmap                 // hapmap 路径 (用于VQSR)
+        val_omni_1000G             // omni 路径
+        val_phase1_1000G           // phase1 路径
+        val_indels_1000G           // indels mills 路径
+
+    main:
+        // 1. 从输入 Channel 中提取不含 BED 的部分 (meta, bam, bai) 用于 BQSR 输入的 join
+        // 假设 ch_input_bam_bai_bed 结构为 [meta, bam, bai, bed]
+        ch_input_bam_bai = ch_input_bam_bai_bed.map { meta, bam, bai, bed ->
+            tuple(meta, bam, bai)
+        }
+
+        // 2. BaseRecalibrator (BQSR)
+        GATK4_BASERECALIBRATOR(
+            ch_input_bam_bai_bed, 
+            ch_fasta,
+            ch_fai, 
+            ch_dict, 
+            ch_known_sites, 
+            ch_known_sites_tbi
+        )
+
+        // 3. ApplyBQSR
+        ch_bam_recal_table = ch_input_bam_bai.join(GATK4_BASERECALIBRATOR.out.table)
+        ch_applybqsr_input = ch_bam_recal_table.combine(val_probe_bed)
+        
+        GATK4_APPLYBQSR(ch_applybqsr_input, ch_fasta, ch_fai, ch_dict)
+
+        // 4. HaplotypeCaller 准备
+        SAMTOOLS_INDEX_BQSR(GATK4_APPLYBQSR.out.bam)
+        ch_bqsr_bam_bai = GATK4_APPLYBQSR.out.bam.join(SAMTOOLS_INDEX_BQSR.out.bai)
+        ch_hc_input = ch_bqsr_bam_bai.combine(val_probe_bed).map{ meta, bam, bai, bed -> 
+            tuple(meta, bam, bai, bed) 
+        }
+
+        // 5. HaplotypeCaller
+        ch_dbsnp = Channel.value( [ [ id: 'dbsnp' ], [file(val_dbsnp, checkIfExists: true)] ] )
+        ch_dbsnp_tbi = Channel.value( [ [ id: 'dbsnp' ], [file(val_dbsnp_tbi, checkIfExists: true)] ] )
+        
+        GATK4_HAPLOTYPECALLER(ch_hc_input, ch_fasta, ch_fai, ch_dict, ch_dbsnp, ch_dbsnp_tbi)
+
+        // 6. VQSR 准备
+        ch_raw_vcf_tbi = GATK4_HAPLOTYPECALLER.out.vcf.join(GATK4_HAPLOTYPECALLER.out.tbi)
+
+        // 7. VQSR SNP
+        def labels_snp = [
+            "--resource:hapmap,known=false,training=true,truth=true,prior=15.0 ${val_hapmap}",
+            "--resource:omni,known=false,training=true,truth=false,prior=12.0 ${val_omni_1000G}", 
+            "--resource:1000G,known=false,training=true,truth=false,prior=10.0 ${val_phase1_1000G}",
+            "--resource:dbsnp,known=true,training=false,truth=false,prior=6.0 ${val_dbsnp}"
+        ]
+        ch_res_snp = Channel.value([ file(val_hapmap), file(val_omni_1000G), file(val_phase1_1000G), file(val_dbsnp) ])
+        ch_res_snp_tbi = Channel.value([ file("${val_hapmap}.tbi"), file("${val_omni_1000G}.tbi"), file("${val_phase1_1000G}.tbi"), file("${val_dbsnp}.tbi") ])
+
+        VariantRecalibrator_SNP(ch_raw_vcf_tbi, ch_res_snp, ch_res_snp_tbi, labels_snp, ch_fasta, ch_fai, ch_dict, "SNP")
+
+        // 8. VQSR INDEL
+        def labels_indel = [ "--resource:mills,known=true,training=true,truth=true,prior=12.0 ${val_indels_1000G}" ]
+        ch_res_indel = Channel.value([ file(val_indels_1000G) ])
+        ch_res_indel_tbi = Channel.value([ file("${val_indels_1000G}.tbi") ])
+
+        VariantRecalibrator_INDEL(ch_raw_vcf_tbi, ch_res_indel, ch_res_indel_tbi, labels_indel, ch_fasta, ch_fai, ch_dict, "INDEL")
+
+        // 9. ApplyVQSR SNP
+        ch_vqsr_snp_input = ch_raw_vcf_tbi
+            .join(VariantRecalibrator_SNP.out.recal)
+            .join(VariantRecalibrator_SNP.out.idx)
+            .join(VariantRecalibrator_SNP.out.tranches)
+            .map { meta, vcf, tbi, recal, idx, tranches ->
+                tuple(meta, vcf, tbi, recal, idx, tranches)
+            }
+        APPLYVQSR_SNP(ch_vqsr_snp_input, ch_fasta, ch_fai, ch_dict, "SNP")
+
+        // 10. ApplyVQSR INDEL
+        ch_vqsr_indel_input = ch_raw_vcf_tbi
+            .join(VariantRecalibrator_INDEL.out.recal)
+            .join(VariantRecalibrator_INDEL.out.idx)
+            .join(VariantRecalibrator_INDEL.out.tranches)
+            .map { meta, vcf, tbi, recal, idx, tranches ->
+                tuple(meta, vcf, tbi, recal, idx, tranches)
+            }
+        APPLYVQSR_INDEL(ch_vqsr_indel_input, ch_fasta, ch_fai, ch_dict, "INDEL")
+
+        // 11. Merge SNPs and Indels
+        ch_merge_input = APPLYVQSR_SNP.out.vcf.join(APPLYVQSR_INDEL.out.vcf)
+            .map { meta, snp_vcf, indel_vcf -> tuple(meta, [snp_vcf, indel_vcf]) }
+        
+        GATK4_MERGEVCFS(ch_merge_input)
+
+    emit:
+        vcf = GATK4_MERGEVCFS.out.vcf  // 输出最终的 VCF
+        
+}
+

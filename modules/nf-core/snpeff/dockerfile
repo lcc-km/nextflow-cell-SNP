@@ -1,0 +1,22 @@
+# First stage: Download and verify fastp binary
+FROM docker.io/eclipse-temurin:21-jre-alpine
+ARG SnpEff_SnpSift_VERSION=5.4c
+
+WORKDIR /opt/
+
+# Use Aliyun mirror and install dependencies
+RUN apk update && \
+    apk add wget unzip 
+
+# Download PRECOMPILED binary (not source code) from GitHub Releases
+RUN wget https://snpeff-public.s3.amazonaws.com/versions/snpEff_latest_core.zip && \
+    unzip snpEff_latest_core.zip  && \
+    rm snpEff_latest_core.zip && \
+    chmod +x /opt/snpEff/*.jar && \
+    echo -e '#!/bin/sh\njava -jar /opt/snpEff/SnpSift.jar "$@"' > /usr/local/bin/SnpSift && \
+    chmod +x /usr/local/bin/SnpSift && \
+    echo -e '#!/bin/sh\njava -jar /opt/snpEff/snpEff.jar "$@"' > /usr/local/bin/snpEff && \
+    chmod +x /usr/local/bin/snpEff && \
+    apk del wget unzip
+ENV PATH="/opt/snpEff:$PATH"
+
